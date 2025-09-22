@@ -65,6 +65,3 @@ P9-Simulator/
 - The simulator randomizes swing profile params for each run, keeping club speed in realistic ranges; the analyzer derives angles using pre-impact windows for robustness.
 - `simulated_sensor_data.json` is gitignored by default to avoid large diffs.
 
-## License
-
-MIT. See `LICENSE`.
