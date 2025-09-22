@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "Golf Companion",
+    "slug": "golf-expo-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "permissions": []
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    }
+  }
+}
