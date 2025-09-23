@@ -43,9 +43,6 @@ android/
 .env
 .env.*
 
-# App-specific generated artifacts
-simulated_sensor_data.json
-
 # Expo caches
 .expo/*
 .expo-shared/*

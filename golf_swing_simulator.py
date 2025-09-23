@@ -132,7 +132,7 @@ def create_simulated_swing_data(num_samples, total_duration_s):
             # CORRECTED: Use a quarter-sine wave so acceleration peaks at impact.
             progress = (t - t_backswing_end) / (t_downswing_end - t_backswing_end)
             accel_factor = math.sin(progress * math.pi / 2)
-            accel_x = 10 * accel_factor + noise_accel
+            accel_x = noise_accel
             accel_y = -9.8 - 5 * accel_factor + noise_accel + y_attack_bias
             accel_z = -15 * accel_factor + noise_accel
         elif t_impact <= t < t_finish:

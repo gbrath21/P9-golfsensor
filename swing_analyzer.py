@@ -333,7 +333,7 @@ def run_once() -> Dict:
     return payload
 
 
-def serve(host: str = '127.0.0.1', port: int = 5001):
+def serve(host: str = '0.0.0.0', port: int = 5001):
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class Handler(BaseHTTPRequestHandler):
@@ -382,7 +382,15 @@ def serve(host: str = '127.0.0.1', port: int = 5001):
                 self.wfile.write(json.dumps({"error": "Not found"}).encode('utf-8'))
 
     httpd = HTTPServer((host, port), Handler)
-    print(f"Swing Analyzer server running at http://{host}:{port} (GET /metrics)")
+    print("Swing Analyzer server running:")
+    try:
+        import socket
+        local_ip = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        local_ip = '127.0.0.1'
+    # Show helpful URLs for localhost and likely LAN address
+    print(f"  Local:    http://127.0.0.1:{port}")
+    print(f"  Network:  http://{local_ip}:{port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

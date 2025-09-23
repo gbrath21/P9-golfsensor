@@ -12,10 +12,12 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.golfexpoapp"
     },
     "android": {
-      "permissions": []
+      "permissions": [],
+      "package": "com.anonymous.golfexpoapp"
     },
     "web": {
       "bundler": "metro",
