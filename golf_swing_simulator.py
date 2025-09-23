@@ -103,6 +103,7 @@ def create_simulated_swing_data(num_samples, total_duration_s):
         gyro_spike_amp = gyro_spike_base * (1.0 + random.uniform(-0.1, 0.1))
         impact_factor = math.exp(-((t - t_impact) ** 2) / (2.0 * spike_sigma ** 2))
 
+        accel_factor = 0.0
         # Gyroscope data
         if t_address < t < t_backswing_end:
             gyro_x = (-15 * gyro_scale) * math.sin((t - t_address) * math.pi / (t_backswing_end - t_address)) + drift_x + noise_gyro
@@ -129,12 +130,23 @@ def create_simulated_swing_data(num_samples, total_duration_s):
             accel_y = -9.8 + 2 * math.sin((t - t_address) * math.pi / (t_backswing_end - t_address)) + noise_accel
             accel_z = 3 * math.sin((t - t_address) * math.pi / (t_backswing_end - t_address)) + noise_accel
         elif t_backswing_end <= t < t_impact:
-            # CORRECTED: Use a quarter-sine wave so acceleration peaks at impact.
+            # Downswing: build a vector whose mean dynamic Y component aligns with y_attack_bias.
             progress = (t - t_backswing_end) / (t_downswing_end - t_backswing_end)
             accel_factor = math.sin(progress * math.pi / 2)
-            accel_x = noise_accel
-            accel_y = -9.8 - 5 * accel_factor + noise_accel + y_attack_bias
-            accel_z = -15 * accel_factor + noise_accel
+
+            # Forward acceleration dominates the horizontal magnitude; lateral component follows path bias.
+            forward_peak = 14.0
+            lateral_peak = 0.25 * path_bias
+            base_forward = -forward_peak * accel_factor
+            base_lateral = lateral_peak * accel_factor
+
+            horizontal_mag = math.sqrt(base_forward * base_forward + base_lateral * base_lateral)
+            attack_slope = math.tan(math.radians(y_attack_bias))
+            vertical_dynamic = horizontal_mag * attack_slope
+
+            accel_x = base_lateral + noise_accel
+            accel_y = -9.8 + vertical_dynamic + noise_accel
+            accel_z = base_forward + noise_accel
         elif t_impact <= t < t_finish:
             accel_x = -5 * math.sin((t - t_impact) * math.pi / (t_finish - t_impact)) + noise_accel
             accel_y = -9.8 + 3 * math.sin((t - t_impact) * math.pi / (t_finish - t_impact)) + noise_accel
@@ -147,7 +159,11 @@ def create_simulated_swing_data(num_samples, total_duration_s):
         accel_z *= accel_scale
 
         if t_backswing_end <= t < t_finish:
-            accel_x += path_bias * (0.6 if t < t_impact else 0.3)
+            if t < t_impact:
+                phase_scale = 0.18 + 0.22 * accel_factor
+            else:
+                phase_scale = 0.12
+            accel_x += path_bias * phase_scale
 
         accel_x += 0.4 * accel_spike_amp * impact_factor
         accel_y += 1.0 * accel_spike_amp * impact_factor * launch_multiplier
