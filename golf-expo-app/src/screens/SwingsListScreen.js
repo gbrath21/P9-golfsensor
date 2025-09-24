@@ -1,130 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { ANALYZER_BASE_URL, USE_SIMULATED_DATA, SIMULATED_DATA_URL } from '../config';
+import { ANALYZER_BASE_URL, USE_SIMULATED_DATA, SIMULATED_DATA_URL, TEMPO_URL } from '../config';
 
 export default function SwingsListScreen() {
   const [loading, setLoading] = useState(true);
   const [swings, setSwings] = useState([]);
 
-  const toNumber = (v) => {
-    if (typeof v === 'number') return isFinite(v) ? v : undefined;
-    if (typeof v === 'string') {
-      // Extract leading numeric content, tolerate units like 'kph', '°', ' mph'
-      const cleaned = v.trim().replace(/[^0-9+\-\.eE]/g, ' ').split(/\s+/)[0];
-      const n = Number(cleaned);
-      return typeof n === 'number' && isFinite(n) ? n : undefined;
-    }
-    return undefined;
-  };
-
-  const get = (obj, path) => {
-    try {
-      return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
-    } catch {
-      return undefined;
-    }
-  };
-
-  const firstDefined = (obj, candidates) => {
-    for (const p of candidates) {
-      const v = typeof p === 'function' ? p(obj) : get(obj, p);
-      if (v !== undefined && v !== null) return v;
-    }
-    return undefined;
-  };
-
-  const normalizeSwing = (item, idx) => {
-    // Index / ID
-    const index = typeof item?.index === 'number' ? item.index : (typeof item?.id === 'number' ? item.id : idx);
-
-    // Samples metadata
-    const numSamples = firstDefined(item, [
-      'metadata.num_samples',
-      'num_samples',
-      'samples',
-      'metadata.samples',
-    ]);
-    const metadata = { num_samples: toNumber(numSamples) ?? numSamples ?? undefined };
-
-    // Club speed (kph). Try multiple common shapes and units
-    const speedMps = firstDefined(item, [
-      'clubSpeed_mps',
-      'club_speed_mps',
-      'metrics.club.speed_mps',
-      'club.speed_mps',
-      'metrics.speed_mps',
-    ]);
-    const speedMph = firstDefined(item, [
-      'clubSpeed_mph',
-      'club_speed_mph',
-      'metrics.club.speed_mph',
-      'club.speed_mph',
-      'metrics.speed_mph',
-    ]);
-    const speedKphRaw = firstDefined(item, [
-      'clubSpeed_kph',
-      'club_speed_kph',
-      'clubSpeedKph',
-      'metrics.club.speed_kph',
-      'club.speed_kph',
-      'metrics.speed_kph',
-      'speed_kph',
-      'speed',
-    ]);
-    const speedKph =
-      toNumber(speedKphRaw) ??
-      (toNumber(speedMps) !== undefined ? toNumber(speedMps) * 3.6 : undefined) ??
-      (toNumber(speedMph) !== undefined ? toNumber(speedMph) * 1.60934 : undefined);
-
-    // Angles (deg)
-    const launchDeg = toNumber(firstDefined(item, [
-      'launchAngle_deg',
-      'launch_angle_deg',
-      'launchAngle',
-      'launch_angle',
-      'angles.launch_deg',
-      'metrics.launch_deg',
-    ]));
-
-    const attackDeg = toNumber(firstDefined(item, [
-      'attackAngle_deg',
-      'attack_angle_deg',
-      'attackAngle',
-      'attack_angle',
-      'angles.attack_deg',
-      'metrics.attack_deg',
-    ]));
-
-    const pathDeg = toNumber(firstDefined(item, [
-      'clubPath_deg',
-      'club_path_deg',
-      'clubPath',
-      'club_path',
-      'angles.path_deg',
-      'metrics.path_deg',
-    ]));
-
+  const mapTempoItem = (item, idx) => {
+    const index = typeof item?.index === 'number' ? item.index : idx;
+    const meta = item?.metadata || {};
     return {
       index,
-      metadata,
-      clubSpeed_kph: speedKph,
-      launchAngle_deg: launchDeg,
-      attackAngle_deg: attackDeg,
-      clubPath_deg: pathDeg,
-      // keep original for debugging if needed
-      __raw: item,
+      metadata: { num_samples: meta.num_samples },
+      backswing_s: item?.backswing_s,
+      downswing_s: item?.downswing_s,
+      ratio: item?.ratio,
+      timestamps: item?.timestamps,
     };
   };
-
-  const normalizeList = (list) => list.map((it, i) => normalizeSwing(it, i));
 
   const fetchAll = async () => {
     try {
       setLoading(true);
       const tryFetch = async (url) => {
-        const res = await fetch(url);
+        const sep = url.includes('?') ? '&' : '?';
+        const bust = `${sep}cb=${Date.now()}`;
+        const res = await fetch(url + bust, { cache: 'no-store' });
         const data = await res.json();
-        // Accept either an array or an object with { swings: [...] }
         const list = Array.isArray(data) ? data : Array.isArray(data?.swings) ? data.swings : null;
         if (!list) throw new Error('Unexpected response shape from ' + url);
         return list;
@@ -142,11 +44,11 @@ export default function SwingsListScreen() {
         }
       }
 
-      // Secondary: analyzer API
+      // Secondary: analyzer API (use TEMPO_URL so axis/params are honored)
       if (!list) {
         try {
-          list = await tryFetch(`${ANALYZER_BASE_URL}/all-metrics`);
-          console.log('[Swings] Loaded from analyzer at', ANALYZER_BASE_URL);
+          list = await tryFetch(TEMPO_URL);
+          console.log('[Swings] Loaded from analyzer at', TEMPO_URL);
         } catch (e) {
           console.warn('[Swings] Analyzer fetch failed:', e?.message);
         }
@@ -159,14 +61,8 @@ export default function SwingsListScreen() {
       }
 
       if (!list) throw new Error('No data sources available. Check ANALYZER_BASE_URL or SIMULATED_DATA_URL.');
-      const normalized = normalizeList(list);
-      if (__DEV__) {
-        try {
-          console.log('[Swings] Raw sample:', JSON.stringify(list[0], null, 2));
-          console.log('[Swings] Normalized sample:', normalized[0]);
-        } catch {}
-      }
-      setSwings(normalized);
+      const tempoList = list.map((it, i) => mapTempoItem(it, i));
+      setSwings(tempoList);
     } catch (e) {
       console.warn(e);
     } finally {
@@ -184,11 +80,9 @@ export default function SwingsListScreen() {
           <Text style={styles.refresh}>Refresh</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.meta}>Samples: {item.metadata?.num_samples ?? '—'}</Text>
-      <View style={styles.row}><Text style={styles.label}>Club Speed</Text><Text style={styles.value}>{typeof item.clubSpeed_kph === 'number' ? item.clubSpeed_kph.toFixed(1) : '—'} kph</Text></View>
-      <View style={styles.row}><Text style={styles.label}>Launch Angle</Text><Text style={styles.value}>{typeof item.launchAngle_deg === 'number' ? item.launchAngle_deg.toFixed(1) : '—'}°</Text></View>
-      <View style={styles.row}><Text style={styles.label}>Attack Angle</Text><Text style={styles.value}>{typeof item.attackAngle_deg === 'number' ? item.attackAngle_deg.toFixed(1) : '—'}°</Text></View>
-      <View style={styles.row}><Text style={styles.label}>Club Path</Text><Text style={styles.value}>{typeof item.clubPath_deg === 'number' ? item.clubPath_deg.toFixed(1) : '—'}°</Text></View>
+      <View style={styles.row}><Text style={styles.label}>Backswing</Text><Text style={styles.value}>{typeof item.backswing_s === 'number' ? item.backswing_s.toFixed(3) : '—'} s</Text></View>
+      <View style={styles.row}><Text style={styles.label}>Downswing</Text><Text style={styles.value}>{typeof item.downswing_s === 'number' ? item.downswing_s.toFixed(3) : '—'} s</Text></View>
+      <View style={styles.row}><Text style={styles.label}>Tempo</Text><Text style={styles.value}>{typeof item.ratio === 'number' ? item.ratio.toFixed(2) : '—'} : 1</Text></View>
     </View>
   );
 

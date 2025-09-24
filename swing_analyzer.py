@@ -3,6 +3,7 @@ import math
 import os
 import sys
 from typing import List, Dict, Tuple
+from urllib.parse import urlparse, parse_qs
 
 """
 Pure-Python swing analyzer that reads the latest swing from simulated_sensor_data.json
@@ -68,6 +69,166 @@ def find_impact_index(samples: List[Dict]) -> int:
             max_mag = mag
             idx = i
     return idx
+
+
+# -----------------------------
+# Tempo-first utilities
+# -----------------------------
+
+def _magnitude3(x: float, y: float, z: float) -> float:
+    return math.sqrt(x * x + y * y + z * z)
+
+
+def smooth_ema(values: List[float], alpha: float = 0.2) -> List[float]:
+    """Simple exponential moving average (no external deps)."""
+    if not values:
+        return []
+    out = [values[0]]
+    for v in values[1:]:
+        out.append(alpha * v + (1 - alpha) * out[-1])
+    return out
+
+
+def detect_start(gyro_mag: List[float], hz: float, threshold_deg_s: float = 45.0, min_ms: int = 100) -> int:
+    """First index where gyro magnitude stays above threshold for min_ms."""
+    if not gyro_mag:
+        return 0
+    min_len = max(1, int((min_ms / 1000.0) * hz))
+    above = [g > threshold_deg_s for g in gyro_mag]
+    run = 0
+    for i, ok in enumerate(above):
+        run = run + 1 if ok else 0
+        if run >= min_len:
+            return i - min_len + 1
+    # fallback: peak location
+    return max(range(len(gyro_mag)), key=lambda i: gyro_mag[i])
+
+
+def detect_top(gyro_axis: List[float], start_idx: int) -> int:
+    """Detect the top as first zero-crossing after start (sign flip)."""
+    if not gyro_axis:
+        return 0
+    s = max(0, start_idx)
+    prev = gyro_axis[s] if s < len(gyro_axis) else 0.0
+    for i in range(s + 1, len(gyro_axis)):
+        cur = gyro_axis[i]
+        if prev == 0:
+            prev = cur
+            continue
+        if (prev > 0 and cur <= 0) or (prev < 0 and cur >= 0):
+            return i
+        prev = cur
+    # fallback: global min after start (change of direction likely)
+    tail = gyro_axis[s:]
+    return s + (min(range(len(tail)), key=lambda i: tail[i]))
+
+
+def detect_impact(accel_mag: List[float], hz: float, threshold_g: float = 10.0, refractory_ms: int = 25, start_from: int = 0) -> int:
+    """Detect first large spike in acceleration magnitude after top."""
+    if not accel_mag:
+        return 0
+    thr = threshold_g * 9.81
+    i0 = max(0, start_from)
+    refractory = max(1, int((refractory_ms / 1000.0) * hz))
+    i = i0
+    while i < len(accel_mag):
+        if accel_mag[i] >= thr:
+            # find local peak within refractory window
+            j_end = min(len(accel_mag), i + refractory)
+            peak_idx = i
+            peak_val = accel_mag[i]
+            for j in range(i + 1, j_end):
+                if accel_mag[j] > peak_val:
+                    peak_val = accel_mag[j]
+                    peak_idx = j
+            return peak_idx
+        i += 1
+    # fallback: global max
+    return max(range(len(accel_mag)), key=lambda k: accel_mag[k])
+
+
+def compute_tempo(samples: List[Dict], primary_axis: str = 'gyro_y',
+                  start_threshold_deg_s: float = 45.0, start_min_ms: int = 100,
+                  impact_threshold_g: float = 10.0, refractory_ms: int = 25,
+                  allow_fallback: bool = True) -> Dict:
+    """Compute start/top/impact indices and tempo metrics for one swing's samples."""
+    if not samples:
+        raise ValueError('No samples provided')
+
+    # derive sampling rate
+    dt = estimate_dt(samples)
+    hz = 1.0 / max(dt, 1e-6)
+
+    # build signals
+    gx = [s.get('gyro_x', 0.0) for s in samples]
+    gy = [s.get('gyro_y', 0.0) for s in samples]
+    gz = [s.get('gyro_z', 0.0) for s in samples]
+    ax = [s.get('accel_x', 0.0) for s in samples]
+    ay = [s.get('accel_y', 0.0) for s in samples]
+    az = [s.get('accel_z', 0.0) for s in samples]
+
+    gyro_mag = [_magnitude3(gx[i], gy[i], gz[i]) for i in range(len(samples))]
+    accel_mag = [_magnitude3(ax[i], ay[i], az[i]) for i in range(len(samples))]
+
+    # smooth
+    gyro_mag_s = smooth_ema(gyro_mag, alpha=0.2)
+    accel_mag_s = smooth_ema(accel_mag, alpha=0.2)
+
+    axis_map = {
+        'gyro_x': gx,
+        'gyro_y': gy,
+        'gyro_z': gz,
+    }
+    axis = axis_map.get(primary_axis, gy)
+    axis_s = smooth_ema(axis, alpha=0.2)
+
+    start_idx = detect_start(gyro_mag_s, hz, start_threshold_deg_s, start_min_ms)
+    # Provisional top from smoothed axis zero-cross
+    top_idx = detect_top(axis_s, start_idx)
+    print(f"DEBUG: Axis {primary_axis}, Start: {start_idx}, Provisional Top: {top_idx}")
+
+    # Provisional impact using accel magnitude after provisional top; if that is pathological, we will recompute
+    impact_idx = detect_impact(accel_mag_s, hz, impact_threshold_g, refractory_ms, start_from=top_idx + 1)
+
+    # Sanity check: ensure downswing duration is plausible; otherwise choose top as argmin of gyro magnitude between start and impact
+    dt = estimate_dt(samples)
+    if impact_idx <= start_idx:
+        impact_idx = detect_impact(accel_mag_s, hz, impact_threshold_g, refractory_ms, start_from=start_idx)
+    downswing_dt = max(0.0, (impact_idx - max(start_idx, top_idx)) * dt)
+    print(f"DEBUG: Axis {primary_axis}, Impact: {impact_idx}, Downswing: {downswing_dt:.3f}s, Fallback: {allow_fallback and (downswing_dt < 0.12 or downswing_dt > 0.6)}")
+
+    if allow_fallback and (downswing_dt < 0.12 or downswing_dt > 0.6):
+        a = max(start_idx + 1, 0)
+        b = max(a + 1, min(len(gyro_mag_s) - 1, impact_idx - 1))
+        if b > a:
+            rel_min = min(range(a, b), key=lambda i: gyro_mag_s[i])
+            top_idx = rel_min
+            print(f"DEBUG: Axis {primary_axis}, Fallback Top: {top_idx}")
+            # recompute duration after fallback top
+            downswing_dt = max(0.0, (impact_idx - top_idx) * dt)
+
+    start_ts = start_idx * dt
+    top_ts = top_idx * dt
+    impact_ts = impact_idx * dt
+
+    backswing_s = max(0.0, top_ts - start_ts)
+    downswing_s = max(1e-6, impact_ts - top_ts)
+    ratio = backswing_s / downswing_s
+
+    return {
+        'start_idx': start_idx,
+        'top_idx': top_idx,
+        'impact_idx': impact_idx,
+        'timestamps': {
+            'start': round(start_ts, 6),
+            'top': round(top_ts, 6),
+            'impact': round(impact_ts, 6),
+        },
+        'backswing_s': round(backswing_s, 6),
+        'downswing_s': round(downswing_s, 6),
+        'ratio': round(ratio, 3),
+        'sampling_hz': round(hz, 3),
+    }
 
 
 def integrate_velocity(samples: List[Dict], dt: float) -> List[Tuple[float, float, float]]:
@@ -351,7 +512,19 @@ def serve(host: str = '0.0.0.0', port: int = 5001):
             self.end_headers()
 
         def do_GET(self):
-            if self.path == '/metrics':
+            parsed = urlparse(self.path)
+            path = parsed.path
+            qs = parse_qs(parsed.query)
+
+            # configurable params
+            start_thr = float(qs.get('start_deg_s', [45.0])[0])
+            start_min = int(qs.get('start_min_ms', [100])[0])
+            impact_thr_g = float(qs.get('impact_g', [10.0])[0])
+            refr_ms = int(qs.get('refractory_ms', [25])[0])
+            primary = qs.get('axis', ['gyro_y'])[0]
+            allow_fb = qs.get('fallback', ['1'])[0] == '1'
+
+            if path == '/metrics':
                 try:
                     payload = run_once()
                     self._set_headers(200)
@@ -359,7 +532,7 @@ def serve(host: str = '0.0.0.0', port: int = 5001):
                 except Exception as e:
                     self._set_headers(500)
                     self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
-            elif self.path == '/all-metrics':
+            elif path == '/all-metrics':
                 try:
                     src = os.path.join(os.path.dirname(__file__), 'simulated_sensor_data.json')
                     swings = load_all_swings(src)
@@ -371,6 +544,75 @@ def serve(host: str = '0.0.0.0', port: int = 5001):
                             "index": idx,
                             "metadata": swing.get('metadata', {}),
                             **metrics,
+                        })
+                    self._set_headers(200)
+                    self.wfile.write(json.dumps(out).encode('utf-8'))
+                except Exception as e:
+                    self._set_headers(500)
+                    self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            elif path == '/events':
+                try:
+                    src = os.path.join(os.path.dirname(__file__), 'simulated_sensor_data.json')
+                    swings = load_all_swings(src)
+                    swing = swings[-1]
+                    samples = swing.get('samples', [])
+                    tempo = compute_tempo(samples, primary_axis=primary,
+                                           start_threshold_deg_s=start_thr,
+                                           start_min_ms=start_min,
+                                           impact_threshold_g=impact_thr_g,
+                                           refractory_ms=refr_ms,
+                                           allow_fallback=allow_fb)
+                    self._set_headers(200)
+                    self.wfile.write(json.dumps(tempo).encode('utf-8'))
+                except Exception as e:
+                    self._set_headers(500)
+                    self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            elif path == '/tempo':
+                try:
+                    src = os.path.join(os.path.dirname(__file__), 'simulated_sensor_data.json')
+                    swings = load_all_swings(src)
+                    swing = swings[-1]
+                    samples = swing.get('samples', [])
+                    tempo = compute_tempo(samples, primary_axis=primary,
+                                           start_threshold_deg_s=start_thr,
+                                           start_min_ms=start_min,
+                                           impact_threshold_g=impact_thr_g,
+                                           refractory_ms=refr_ms,
+                                           allow_fallback=allow_fb)
+                    # Only keep tempo fields for compact response
+                    compact = {
+                        'backswing_s': tempo['backswing_s'],
+                        'downswing_s': tempo['downswing_s'],
+                        'ratio': tempo['ratio'],
+                        'timestamps': tempo['timestamps'],
+                        'sampling_hz': tempo['sampling_hz'],
+                    }
+                    self._set_headers(200)
+                    self.wfile.write(json.dumps(compact).encode('utf-8'))
+                except Exception as e:
+                    self._set_headers(500)
+                    self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            elif path == '/all-tempo':
+                try:
+                    src = os.path.join(os.path.dirname(__file__), 'simulated_sensor_data.json')
+                    swings = load_all_swings(src)
+                    out = []
+                    for idx, swing in enumerate(swings):
+                        samples = swing.get('samples', [])
+                        tempo = compute_tempo(samples, primary_axis=primary,
+                                               start_threshold_deg_s=start_thr,
+                                               start_min_ms=start_min,
+                                               impact_threshold_g=impact_thr_g,
+                                               refractory_ms=refr_ms,
+                                               allow_fallback=allow_fb)
+                        out.append({
+                            'index': idx,
+                            'backswing_s': tempo['backswing_s'],
+                            'downswing_s': tempo['downswing_s'],
+                            'ratio': tempo['ratio'],
+                            'timestamps': tempo['timestamps'],
+                            'sampling_hz': tempo['sampling_hz'],
+                            'metadata': swing.get('metadata', {}),
                         })
                     self._set_headers(200)
                     self.wfile.write(json.dumps(out).encode('utf-8'))

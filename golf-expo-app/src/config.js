@@ -9,6 +9,16 @@ export const ANALYZER_BASE_URL = 'http://192.168.0.175:5001';
 // Then set SIMULATED_DATA_URL to: 'http://<your-lan-ip>:8000/simulated_sensor_data.json'
 export const USE_SIMULATED_DATA = true;
 
-// Full URL to the simulated data JSON. Must be accessible from your phone on the same Wi‑Fi.
-// Tip: find your LAN IP on macOS with: ipconfig getifaddr en0
-export const SIMULATED_DATA_URL = 'http://192.168.0.175:5001/all-metrics';
+// Select which gyro axis to use for detecting the top of the swing.
+// Change ONLY this to try different axes: 'gyro_x' | 'gyro_y' | 'gyro_z'
+export const TEMPO_AXIS = 'gyro_y';
+// Enable fallback top detection (1) or disable (0) to test axis sensitivity
+export const TEMPO_FALLBACK = 0;
+// Tempo-first endpoint used by the app
+export const TEMPO_URL = `${ANALYZER_BASE_URL}/all-tempo?axis=${encodeURIComponent(TEMPO_AXIS)}&fallback=${TEMPO_FALLBACK}`;
+
+// Use the tempo endpoint for simulated data as well so both paths share the same axis/params
+// Must be accessible from your phone on the same Wi‑Fi.
+export const SIMULATED_DATA_URL = TEMPO_URL;
+
+
