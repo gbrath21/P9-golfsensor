@@ -148,8 +148,8 @@ def detect_impact(accel_mag: List[float], hz: float, threshold_g: float = 10.0, 
 
 
 def compute_tempo(samples: List[Dict], primary_axis: str = 'gyro_y',
-                  start_threshold_deg_s: float = 45.0, start_min_ms: int = 100,
-                  impact_threshold_g: float = 10.0, refractory_ms: int = 25,
+                  start_threshold_deg_s: float = 5.0, start_min_ms: int = 100,
+                  impact_threshold_g: float = 1.5, refractory_ms: int = 25,
                   allow_fallback: bool = True) -> Dict:
     """Compute start/top/impact indices and tempo metrics for one swing's samples."""
     if not samples:
