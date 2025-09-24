@@ -127,14 +127,15 @@ def detect_impact(accel_mag: List[float], hz: float, threshold_g: float = 10.0, 
     """Detect first large spike in acceleration magnitude after top."""
     if not accel_mag:
         return 0
+    n = len(accel_mag)
     thr = threshold_g * 9.81
-    i0 = max(0, start_from)
+    i0 = min(max(0, start_from), n - 1)
     refractory = max(1, int((refractory_ms / 1000.0) * hz))
     i = i0
-    while i < len(accel_mag):
+    while i < n:
         if accel_mag[i] >= thr:
             # find local peak within refractory window
-            j_end = min(len(accel_mag), i + refractory)
+            j_end = min(n, i + refractory)
             peak_idx = i
             peak_val = accel_mag[i]
             for j in range(i + 1, j_end):
@@ -143,13 +144,18 @@ def detect_impact(accel_mag: List[float], hz: float, threshold_g: float = 10.0, 
                     peak_idx = j
             return peak_idx
         i += 1
-    # fallback: global max
-    return max(range(len(accel_mag)), key=lambda k: accel_mag[k])
+    # fallback: choose the strongest sample AFTER the requested start index.
+    tail = accel_mag[i0:]
+    if tail:
+        rel_idx = max(range(len(tail)), key=lambda k: tail[k])
+        return i0 + rel_idx
+    # If start_from was past the end, just return the global max.
+    return max(range(n), key=lambda k: accel_mag[k])
 
 
 def compute_tempo(samples: List[Dict], primary_axis: str = 'gyro_y',
-                  start_threshold_deg_s: float = 45.0, start_min_ms: int = 100,
-                  impact_threshold_g: float = 10.0, refractory_ms: int = 25,
+                  start_threshold_deg_s: float = 5.0, start_min_ms: int = 100,
+                  impact_threshold_g: float = 1.5, refractory_ms: int = 25,
                   allow_fallback: bool = True) -> Dict:
     """Compute start/top/impact indices and tempo metrics for one swing's samples."""
     if not samples:
